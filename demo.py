@@ -1,10 +1,11 @@
 import argparse
 import json
 from contextlib import closing
+from itertools import combinations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from audit.decision import report
+from audit.decision import report, report_robust
 from measure.catalog import load_revision
 from measure.rationals import format_rational
 from measure.revisions import register_batch
@@ -95,6 +96,55 @@ def _read_corrected_sources(archive, old_revisions, new_revisions):
             for slot, source in sources.items()}
 
 
+def _robust_examples(archive, frozen_id, robust):
+    """Judge the robust sample reports against the frozen XY plane."""
+    batches = {slot: _register(archive, batch) for slot, batch in robust['batches'].items()}
+    cases = []
+    for specification in robust['reports']:
+        report_id, passed = report_robust(
+            archive, frozen_id, batches[specification['left']], batches[specification['right']],
+            specification['lo_left'], specification['lo_right'],
+            specification['drop_left'], specification['drop_right'],
+        )
+        _check(passed, specification['passed'], f"robust verdict {specification}")
+        view = read_result(archive, 'report', report_id)
+        _check([view['drop_left'], view['drop_right']],
+               [specification['drop_left'], specification['drop_right']], 'readback budgets')
+        cases.append((specification, report_id, view))
+
+    single_ids = []
+    for slot, rows in robust['singles'].items():
+        revision = register_batch(archive, slot, 'mm/s', ('X', 'Y', 'Z'), rows)
+        single_ids.append(revision)
+    pairwise = [report(archive, frozen_id, first, second, '1/2', '1/2')[1]
+                for first, second in combinations(single_ids, 2)]
+    _check(pairwise, [True, True, True], 'each pair shares an axis')
+    joint_left = register_batch(archive, 'three directions', 'mm/s', ('X', 'Y', 'Z'),
+                                [row for rows in robust['singles'].values() for row in rows])
+    joint = report_robust(archive, frozen_id, joint_left, batches['quiet'], '1/2', 0, 2, 0)[1]
+    _check(joint, False, 'all three together share no axis')
+    return batches, cases, pairwise
+
+
+def _robust_axis_archive(archive, data):
+    """The single-axis sample: the same revision is used for both positions."""
+    training = _register(archive, data['batches']['axis_training'])
+    frozen_id = fit(archive, training, data['axis_largest'])
+    shared = _register(archive, data['batches']['shared'])
+
+    report_ids = []
+    for specification in data['axis_reports']:
+        report_id, passed = report_robust(
+            archive, frozen_id, shared, shared, specification['lo_left'], specification['lo_right'],
+            specification['drop_left'], specification['drop_right'])
+        _check(passed, specification['passed'], f"axis verdict {specification}")
+        report_ids.append(report_id)
+    corrections = _register(archive, {'name': '共用读数', 'unit': 'mm/s',
+                                      'columns': ('X', 'Y', 'Z'),
+                                      'rows': data['correction']['rows']}, parent=shared)
+    return frozen_id, shared, report_ids, corrections
+
+
 def _emit(case_id, inputs, expected, actual, downstream_expected, downstream_actual, paths, oracle):
     evidence = {
         'case_id': case_id,
@@ -123,14 +173,22 @@ def run_demo():
                 slot: _register(archive, data['batches'][slot] | changes, parent=revisions[slot])
                 for slot, changes in data['corrections'].items()
             }
+            _, robust_cases, pairwise = _robust_examples(archive, frozen_id, data['robust'])
+            axis_fit, axis_shared, axis_ids, axis_correction = _robust_axis_archive(archive, data['robust'])
+            axis_snapshot = [read_result(archive, 'report', identifier) for identifier in axis_ids]
+            end_counts = _report_counts(archive)
         for _ in range(2):
             with closing(open_archive(path)) as archive:
                 initialize_archive(archive)
-                _check(_report_counts(archive), counts, 'durable rollback')
+                _check(_report_counts(archive), end_counts, 'durable publications and rollback')
                 reread = _snapshot(archive, frozen_id, report_ids)
                 _check(reread, snapshot, 'fixed handoff after reopening')
                 corrected_first_rows = _read_corrected_sources(archive, revisions, corrected)
                 _check(corrected_first_rows, expected['corrected_first_rows'], 'durable corrections')
+                axis_reread = [read_result(archive, 'report', identifier) for identifier in axis_ids]
+                _check(axis_reread, axis_snapshot, 'robust fixed handoff after reopening')
+                _check(load_revision(archive, axis_correction).parent_rev, axis_shared,
+                       'robust correction parent')
         with closing(open_archive(path)) as archive:
             initialize_archive(archive)
             retry_id, passed = report(archive, frozen_id, revisions['left'], revisions['right'],
@@ -151,6 +209,30 @@ def run_demo():
           expected['corrected_first_rows'], corrected_first_rows,
           ['measure/catalog.py', 'publish/store.py', 'publish/links.py', 'review/handoff.py'],
           'Compare the published parents with the IDs originally passed in and the new rows with the inputs.')
+
+    robust_expected = [specification['passed'] for specification in data['robust']['reports']]
+    _emit('v10.robust_retained_budget',
+          {'reports': data['robust']['reports'],
+           'pairwise_single_rows': data['robust']['pairwise']},
+          robust_expected, [view['passed'] for _, _, view in robust_cases],
+          [True, True, True], pairwise,
+          ['audit/robust.py', 'audit/request.py', 'audit/decision.py', 'publish/report_records.py',
+           'review/report_view.py'],
+          'Each pair of the three single-row conditions shares an axis, yet all three together share none; '
+          'the worst retained mean stays exact and each report keeps its per-position budgets.')
+    _emit('v11.robust_budget_reopen',
+          {'fit_id': axis_fit, 'revision': axis_shared,
+           'budgets': [[specification['drop_left'], specification['drop_right']]
+                       for specification in data['robust']['axis_reports']],
+           'correction': axis_correction},
+          [specification['passed'] for specification in data['robust']['axis_reports']],
+          [view['passed'] for view in axis_snapshot],
+          [[view['drop_left'], view['drop_right']] for view in axis_snapshot],
+          [[view['drop_left'], view['drop_right']] for view in axis_reread],
+          ['audit/robust.py', 'publish/report_records.py', 'publish/links.py', 'measure/catalog.py',
+           'review/handoff.py'],
+          'Two reports of the same revision keep their own budgets; a correction is a new parent, '
+          'and reopening reads the fixed reports without recomputing.')
 
 
 def main():

@@ -43,4 +43,15 @@ with closing(open_archive('archive.sqlite3')) as archive:
 
 报告的两个位置各指定一个修订和一个非负门槛。同一修订可重复使用。工况与训练单位必须一致。每个工况的分数是其各行减去训练中心后，沿同一候选实单位方向投影并平方，再按该工况行数取均值。方向正负表示同一投影。门槛使用测量单位的平方，等号达标。真和假的有效请求都获报告标识。拟合与报告发布时固定原父链，视图中的有理量使用 `分子/正分母` 字符串。
 
+### 双工况抗剔除报告
+
+```python
+from audit.decision import report_robust
+
+report_id, passed = report_robust(archive, fit_id, left_rev, right_rev,
+                                  lo_left, lo_right, drop_left, drop_right)
+```
+
+每个位置引用的工况须有 1～12 行；`drop_left`、`drop_right` 是非布尔整数且满足 `0 <= drop < 本位置行数`。通过当且仅当存在同一根允许实单位轴，使两工况各自在剔除不超过本位置预算的任意行后，关于冻结训练中心的平方投影均值仍达到本位置门槛。读回字段与 V1 相同，另含整数 `drop_left`、`drop_right`，其 `energy` 为 `worst_retained_mean_squared_projection_about_training_center`。详见 ROBUST.md 与 HANDOFF.md。
+
 登记校验、拟合校验和报告绑定错误分别通过 `BatchInputError`、`FitInputError` 和 `CoverageInputError` 返回，且拒绝当次写入。测量写入错误为 `BatchWriteError`，成果发布错误为 `PublicationError`。拟合和报告可选的 `before_commit` 无参回调可观察暂存状态或抛出异常以检验回滚，回调须把事务控制留给发布接口。`read_result` 接受 `fit` 与 `report` 两种类型，未知标识或类型错配触发 `ResultReadError`。

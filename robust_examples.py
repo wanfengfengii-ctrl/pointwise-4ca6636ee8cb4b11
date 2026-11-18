@@ -1,5 +1,6 @@
 import argparse
 import json
+import unittest
 from contextlib import closing
 from fractions import Fraction
 from itertools import combinations
@@ -148,9 +149,20 @@ def _publication_cases(archive, robust):
     return [previous, *saved]
 
 
+def _run_regression():
+    loader = unittest.TestLoader()
+    suite = loader.discover(str(Path(__file__).resolve().parent / 'tests'),
+                            top_level_dir=str(Path(__file__).resolve().parent))
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    if not result.wasSuccessful():
+        raise AssertionError('original regression suite failed')
+    return result.testsRun
+
+
 def verify():
     from audit.decision import report_robust
 
+    regression_count = _run_regression()
     with TemporaryDirectory() as directory:
         path = Path(directory) / 'audit.sqlite3'
         with closing(open_archive(path)) as archive:
@@ -161,7 +173,8 @@ def verify():
             initialize_archive(archive)
             reloaded = [read_result(archive, 'report', view['report_id']) for view in saved]
         _check(reloaded, saved, 'read fixed reports after correction and reopen')
-        return {'coverage': verdicts, 'after_reopen': reloaded}
+        return {'regression_tests': regression_count, 'coverage': verdicts,
+                'after_reopen': reloaded}
 
 
 def main():

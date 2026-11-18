@@ -1,10 +1,11 @@
+from audit.robust import ROBUST_ENERGY
 from publish.codec import encode_report_payload, encode_vector
 from publish.fit_records import FitRecord
 from publish.report_records import ReportRecord
 
 
 def build_report_view(report: ReportRecord, fit: FitRecord) -> dict:
-    return {
+    view = {
         'kind': 'report',
         'report_id': report.report_id,
         'fit_id': fit.fit_id,
@@ -14,6 +15,12 @@ def build_report_view(report: ReportRecord, fit: FitRecord) -> dict:
         'unit': fit.unit,
         'energy_unit': f'({fit.unit})^2',
         'center': encode_vector(fit.center),
-        'energy': 'mean_squared_projection_about_training_center',
+        'energy': (ROBUST_ENERGY
+                   if report.is_robust
+                   else 'mean_squared_projection_about_training_center'),
         **encode_report_payload(report.lo_left, report.lo_right, report.passed),
     }
+    if report.is_robust:
+        view['drop_left'] = report.drop_left
+        view['drop_right'] = report.drop_right
+    return view

@@ -2,8 +2,9 @@ from fractions import Fraction
 
 from audit.criterion import ThresholdPair, build_threshold_pair
 from audit.energy import compute_energy_form
-from audit.request import resolve_request
-from publish.commit import publish_report
+from audit.request import resolve_request, resolve_robust_request
+from audit.robust import robust_verdict
+from publish.commit import publish_report, publish_robust_report
 
 
 def _nonnegative_radical(p: Fraction, q: Fraction, radicand: Fraction) -> bool:
@@ -61,5 +62,21 @@ def report(archive, fit_id, left_rev, right_rev, lo_left, lo_right, *, before_co
     report_id = publish_report(
         archive, request.fit.fit_id, request.left.revision_id, request.right.revision_id,
         request.lo_left, request.lo_right, passed, before_commit=before_commit,
+    )
+    return report_id, passed
+
+
+def report_robust(archive, fit_id, left_rev, right_rev, lo_left, lo_right,
+                  drop_left, drop_right, *, before_commit=None):
+    request = resolve_robust_request(archive, fit_id, left_rev, right_rev,
+                                     lo_left, lo_right, drop_left, drop_right)
+    passed = robust_verdict(
+        request.fit.basis, request.fit.center, request.left.rows, request.right.rows,
+        request.lo_left, request.lo_right, request.drop_left, request.drop_right,
+    )
+    report_id = publish_robust_report(
+        archive, request.fit.fit_id, request.left.revision_id, request.right.revision_id,
+        request.lo_left, request.lo_right, request.drop_left, request.drop_right, passed,
+        before_commit=before_commit,
     )
     return report_id, passed
